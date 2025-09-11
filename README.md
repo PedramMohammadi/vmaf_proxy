@@ -1,5 +1,4 @@
 # VMAF Proxy
-# VMAF-Proxy: A 3D-CNN Proxy for Frame-Level VMAF
 
 This repository provides a deep learning model to estimate frame-level VMAF directly from a reference and a distorted video stream. This repo includes the full data pipeline from **dataset split → compression (x265) → VMAF calculation → frame extraction → CSV metadata → training** as well as cloud-friendly options and seeds for determinism.
 
