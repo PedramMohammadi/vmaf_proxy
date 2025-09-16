@@ -12,8 +12,19 @@ This work builds a **neural proxy** that:
 
 To generate sequences of different quality, I used **x265** as the primary encoder. Other encoders can also be used and tested for performance.
 
+## Note: 
+Found a bug or have an improvement? Contributions are welcome! 🙌
+1. **Open an issue** with a minimal repro (dataset slice, command line, logs).
+2. **Submit a Merge Request / Pull Request** referencing the issue.
+3. Please follow this checklist:
+   - Clear description of the bug/fix
+   - Steps to reproduce (commands, args, env details)
+   - Affected files
+
+I will review merge requests and leave feedback or merge when ready. Thanks for helping improve the project! 🚀
+
 # Dataset
-This project trains and validates on **YouTube UGC (User-Generated Content) Dataset**. Training on this dataset has a wide variety of advantages such as:
+This project trains and validates on **YouTube UGC (User-Generated Content) 720p Dataset**. Training on this dataset has a wide variety of advantages such as:
 - **Real-world distribution:** UGC covers the long tail of scenes, devices, and capture conditions
 - **High content diversity:** Strong variation in motion, texture, lighting, scene dynamics, and camera pipelines improves **generalization** of the learned mapping from input frame to reconstructed frame
 
