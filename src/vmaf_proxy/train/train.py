@@ -232,18 +232,19 @@ if __name__ == "__main__":
             
             scaler.scale(loss).backward()
             
+            # Check for finite gradients before unscaling
             scaler.unscale_(optimizer)
             gnorm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            if not torch.isfinite(gnorm):
-                print("non-finite grad norm; skipping step.")
-                optimizer.zero_grad(set_to_none=True)
-                continue
             
-            scaler.step(optimizer)
+            if torch.isfinite(gnorm):
+                # Only step if gradients are finite
+                scaler.step(optimizer)
+                running_loss += loss.item()
+                num_train_batches += 1
+            else:
+                print("non-finite grad norm; skipping step.")
+            
             scaler.update()
-
-            running_loss += loss.item()
-            num_train_batches += 1
 
         avg_train_loss = running_loss / max(1, num_train_batches)
         train_losses.append(avg_train_loss)
@@ -278,6 +279,14 @@ if __name__ == "__main__":
         
         if num_val_batches == 0:
             print("[WARN] No valid validation batches this epoch; skipping metrics/ckpt.")
+            early_stop_counter += 1
+            print(f"No improvement in val_loss for {early_stop_counter} epoch(s).")
+            # "very bad" val loss
+            if scheduler:
+                scheduler.step(float('inf'))  # forces "no improvement" this epoch
+            if args.early_stop and early_stop_counter >= args.early_stop_patience:
+                print("Early stopping triggered.")
+                break
             continue
 
         avg_val_loss = val_loss / max(1, num_val_batches)
