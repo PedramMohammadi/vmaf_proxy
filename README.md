@@ -64,6 +64,44 @@ This codebase is **Vertex AI–first**:
 - **Primary target**: Google Vertex AI (custom training jobs), GCS storage, and `gs://` paths.
 - **Local runs**: It is supported, but you may need to turn off cloud-only features and/or install extra packages.
 
+### Run on Google Vertex AI
+
+```bash
+gcloud ai custom-jobs create --region=us-central1 --display-name=vmaf-proxy-training --config="C:/Users/User/Desktop/DL/VmafProxy/config.yaml"
+
+- **config.yaml**
+workerPoolSpecs:
+  - machineSpec:
+      machineType: g2-standard-32
+      acceleratorType: NVIDIA_L4
+      acceleratorCount: 1
+    replicaCount: 1
+    diskSpec:
+      bootDiskType: pd-ssd
+      bootDiskSizeGb: 2000   # ok to set via YAML; default is 100 GB if omitted
+    containerSpec:
+      imageUri: us-docker.pkg.dev/vertex-ai/training/pytorch-gpu.2-0.py310:latest
+      command: ["bash","-lc"]
+      args:
+        - |
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive MALLOC_ARENA_MAX=2
+          apt-get update -y
+          apt-get install -y google-cloud-cli
+          mkdir -p /data/dataset
+          gsutil -m rsync -r gs://vmaf_proxy_dataset/dataset /data/dataset
+          python -m pip install -U pip
+          gsutil cp -n gs://vmaf_proxy_code/trainer-0.1.tar.gz /tmp/trainer-0.1.tar.gz
+          python -m pip install --no-cache-dir /tmp/trainer-0.1.tar.gz google-cloud-storage gcsfs
+          df -h /
+          df -h /data
+          python -m Trainer.task \
+            --csv_file=/data/dataset/proxy_vmaf_groups.csv \
+            --root_dir=/data/dataset \
+            --output_dir=/tmp/checkpoints \
+            --early_stop \
+            --use_plateau_scheduler
+```
 ## Repository layout
 ```text
 vmaf_proxy/
@@ -77,7 +115,7 @@ vmaf_proxy/
 │     ├─ models/
 │     │  └─ model.py          # 3D CNN + SE, fusion head
 │     └─ train/
-│        └─ train.py             # CLI entry; training loop, metrics, ckpts
+│        └─ train.py             # CLI entry; training loop, metrics, checkpoints
 ├─ scripts/
 │  ├─ compress.py              # encode sources at CRFs (x264/x265/SVT-AV1)
 │  ├─ compute_vmaf.py          # produce frame-level VMAF JSON logs
