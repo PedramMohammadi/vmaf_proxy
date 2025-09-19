@@ -68,8 +68,9 @@ This codebase is **Vertex AI–first**:
 
 ```bash
 gcloud ai custom-jobs create --region=us-central1 --display-name=vmaf-proxy-training --config="C:/Users/User/Desktop/DL/VmafProxy/config.yaml"
-
-- **config.yaml**
+```
+- **config.yaml**:
+```bash
 workerPoolSpecs:
   - machineSpec:
       machineType: g2-standard-32
