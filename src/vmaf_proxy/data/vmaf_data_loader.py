@@ -10,11 +10,6 @@ import torchvision.io as io
 from torchvision.io import ImageReadMode
 
 
-try:
-    import gcsfs
-except ImportError:
-    gcsfs = None
-
 def _as_posix(p: str) -> str:
     return str(p).replace("\\", "/")
 
@@ -57,9 +52,6 @@ class VMAFDataset(Dataset):
         self.dist_keys = all_dist_keys[start:start+n_frames]
         self.ref_keys  = all_ref_keys[start:start+n_frames]
 
-        self.fs = None
-        self._fs_pid = None
-        self.root_dir = _as_posix(str(self.root_dir))
         self.skipped = 0
 
     def _sorted_keys(self, cols, prefix):
@@ -107,31 +99,20 @@ class VMAFDataset(Dataset):
     def __len__(self):
         return len(self.data)
 
-    def _ensure_fs(self):
-        if not self.root_dir.startswith("gs://"):
-            return
-        if gcsfs is None:
-            raise ImportError("gcsfs is required for GCS paths. pip install gcsfs")
-        if self.fs is None or self._fs_pid != os.getpid():
-            self.fs = gcsfs.GCSFileSystem(
-                token="cloud",
-                block_size=16 * 1024 * 1024,
-                cache_timeout=600,
-                read_chunk_size=8 * 1024 * 1024
-            )
-            self._fs_pid = os.getpid()
-
     def load_and_crop_torch(self, relative_path, i, j):
         rel = _as_posix(str(relative_path)).lstrip("/")
-        if self.root_dir.startswith("gs://"):
-            self._ensure_fs()
-            full_path = f"{self.root_dir.rstrip('/')}/{rel}"
-            with self.fs.open(full_path, "rb") as f:
-                data = f.read()
-                img_uint8 = io.decode_image(torch.tensor(bytearray(data), dtype=torch.uint8), mode=ImageReadMode.GRAY)
-        else:
-            full_path = os.path.join(self.root_dir, os.path.normpath(rel))
-            img_uint8 = io.read_image(full_path, mode=None)  # (1,H,W) uint8
+        full_path = os.path.join(self.root_dir, os.path.normpath(rel))  # Now /gcs/... (local FS)
+
+        if not os.path.exists(full_path):
+            raise FileNotFoundError(full_path)
+        try:
+            img_uint8 = io.read_image(full_path, mode=ImageReadMode.GRAY)  # (1,H,W) uint8
+        except RuntimeError as e:
+            # torchvision raises RuntimeError(Errno 2) for missing files
+            if "No such file or directory" in str(e):
+                raise FileNotFoundError(full_path)
+            raise
+
         img_float = img_uint8.float() / 255.0  # To [0,1]
         H, W = img_float.shape[-2:]
         i = 0 if H <= self.crop_size else min(i, H - self.crop_size)
@@ -162,7 +143,7 @@ class VMAFDataset(Dataset):
             y = torch.tensor(float(row["vmaf_score"]) / 100.0, dtype=torch.float32)
             return x_ref, x_dist, y
 
-        except (FileNotFoundError, OSError) as e:
+        except (FileNotFoundError, OSError, RuntimeError) as e:
             self.skipped += 1
             if self.skipped % 100 == 0:
                 print(f"Skipped {self.skipped} samples so far")

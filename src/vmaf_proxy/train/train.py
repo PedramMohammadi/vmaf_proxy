@@ -29,7 +29,7 @@ np.random.seed(seed)
 random.seed(seed)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.benchmark = True # Can pick non-deterministic kernels. Set "torch.backends.cudnn.benchmark = False" and "torch.backends.cudnn.deterministic = True" For absolute deterministic behavior
 
 # ------------------------------
 # Helpers
@@ -45,6 +45,15 @@ def worker_init_fn(worker_id):
     np.random.seed(seed)
     random.seed(seed)
 
+def safe_corr(preds_np, targets_np):
+    if np.std(preds_np) == 0 or np.std(targets_np) == 0:
+        return 0.0, 0.0
+    plcc = pearsonr(preds_np, targets_np)[0]
+    srcc = spearmanr(preds_np, targets_np)[0]
+    if not np.isfinite(plcc): plcc = 0.0
+    if not np.isfinite(srcc): srcc = 0.0
+    return plcc, srcc
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Training a VMAF proxy model using 3D CNN architecture.")
@@ -52,7 +61,7 @@ if __name__ == "__main__":
     parser.add_argument("--root_dir", type=str, required=True, help="Root directory where frames are stored.")
     parser.add_argument("--output_dir", type=str, default="output", help="Directory to save model checkpoints, metrics, and plots.")
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs.")
-    parser.add_argument("--batch_size", type=int, default=64, help="Batch size for training and validation.")
+    parser.add_argument("--batch_size", type=int, default=8, help="Batch size for training and validation.")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for the optimizer.")
     parser.add_argument("--norm_groups", type=int, default=16, help="Groups per conv block. Ideally a divisor of the layer's channel count.")
     parser.add_argument("--kernel_size", type=int, default=3, help="3D convolution kernel size for. Must be an odd number")
@@ -63,12 +72,12 @@ if __name__ == "__main__":
     parser.add_argument("--use_plateau_scheduler", action="store_true", help="Modify the learning rate when learning plateaus.")
     parser.add_argument("--width", type=float, default=0.75, help="Width multiplier for channel counts in the model.")
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout probability in convolutional layers.")
-    parser.add_argument("--activation", type=str, default="leaky_relu", choices=["relu", "leaky_relu"], help="Activation function in the model ('relu' or 'leaky_relu'; default: 'relu').")
+    parser.add_argument("--activation", type=str, default="leaky_relu", choices=["relu", "leaky_relu"], help="Activation function in the model.")
     parser.add_argument("--crop_size", type=int, default=128, help="Size of square crop patches from frames.")
     parser.add_argument("--n_frames", type=int, default=3, help="Number of consecutive frames per sample.")
     parser.add_argument("--early_stop", action="store_true", help="Enable early stopping based on validation loss.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device for training.")
-    parser.add_argument("--num_workers", type=int, default=2, help="Number of workers for data loading.")
+    parser.add_argument("--num_workers", type=int, default=4, help="Number of workers for data loading.")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint file to resume training from.")
     args = parser.parse_args()
 
@@ -77,8 +86,21 @@ if __name__ == "__main__":
     if args.n_frames % 2 == 0:
         raise ValueError(f"--n_frames must be odd (got {args.n_frames})")
 
-    mp.set_start_method('spawn', force=True)
+    # Option B: everything is local (prefetched with gsutil rsync to /data/dataset)
+    def _gs_to_local(p: str, local_root="/data"):
+        if not isinstance(p, str) or not p.startswith("gs://"):
+            return p
+        # gs://<bucket>/<suffix>  → /data/<suffix>
+        bucket_and_suffix = p[5:]
+        _, _, suffix = bucket_and_suffix.partition("/")
+        return f"{local_root}/{suffix}".rstrip("/")
 
+    # Redirect any gs:// paths to the local mirror
+    args.root_dir = _gs_to_local(args.root_dir, "/data")
+    args.csv_file = _gs_to_local(args.csv_file, "/data")
+
+    mp.set_start_method('spawn', force=True)
+    
     train_dataset = VMAFDataset(
         csv_file=args.csv_file,
         root_dir=args.root_dir,
@@ -98,7 +120,7 @@ if __name__ == "__main__":
 
     train_loader = TorchDataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=True,
-        num_workers=args.num_workers, prefetch_factor=4,
+        num_workers=args.num_workers, prefetch_factor=16,
         pin_memory=args.device.startswith("cuda"),
         persistent_workers=(args.num_workers > 0),
         drop_last=False,
@@ -106,7 +128,7 @@ if __name__ == "__main__":
     )
     val_loader = TorchDataLoader(
         val_dataset, batch_size=args.batch_size, shuffle=False,
-        num_workers=args.num_workers, prefetch_factor=4,
+        num_workers=args.num_workers, prefetch_factor=16,
         pin_memory=args.device.startswith("cuda"),
         persistent_workers=(args.num_workers > 0),
         drop_last=False,
@@ -194,13 +216,29 @@ if __name__ == "__main__":
             ref, dist, target = batch
             ref, dist, target = ref.to(args.device), dist.to(args.device), target.to(args.device)
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
+
+            # Skip batch if any tensor has NaN/Inf
+            if not (torch.isfinite(ref).all() and torch.isfinite(dist).all() and torch.isfinite(target).all()):
+                continue
+
             with autocast():
                 prediction = model(ref, dist).view(-1)
-                prediction = prediction.squeeze()
-                loss = criterion(prediction, target.view(-1))
-
+                target_flat = target.view(-1)
+                loss = criterion(prediction, target_flat)
+            
+            if not torch.isfinite(loss):
+                continue
+            
             scaler.scale(loss).backward()
+            
+            scaler.unscale_(optimizer)
+            gnorm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            if not torch.isfinite(gnorm):
+                print("non-finite grad norm; skipping step.")
+                optimizer.zero_grad(set_to_none=True)
+                continue
+            
             scaler.step(optimizer)
             scaler.update()
 
@@ -224,22 +262,30 @@ if __name__ == "__main__":
                 ref, dist, target = batch
                 ref, dist, target = ref.to(args.device), dist.to(args.device), target.to(args.device)
 
+                # Skip batch if any tensor has NaN/Inf
+                if not (torch.isfinite(ref).all() and torch.isfinite(dist).all() and torch.isfinite(target).all()):
+                    continue
+
                 with autocast():
                     prediction = model(ref, dist).view(-1)
-                    prediction = prediction.squeeze()
-                    loss = criterion(prediction, target.view(-1))
+                    target_flat = target.view(-1)
+                    loss = criterion(prediction, target_flat)
 
                 val_loss += loss.item()
                 num_val_batches += 1
-                preds.append((prediction * 100).detach().cpu())
-                targets.append((target * 100).detach().cpu())
+                preds.append((prediction * 100).detach().cpu().view(-1))
+                targets.append((target * 100).detach().cpu().view(-1))
+        
+        if num_val_batches == 0:
+            print("[WARN] No valid validation batches this epoch; skipping metrics/ckpt.")
+            continue
 
         avg_val_loss = val_loss / max(1, num_val_batches)
         val_losses.append(avg_val_loss)
         mae = torch.abs(torch.cat(preds) - torch.cat(targets)).mean().item()
         val_mae.append(mae)
-        plcc = pearsonr(torch.cat(preds).numpy(), torch.cat(targets).numpy())[0]
-        srcc = spearmanr(torch.cat(preds).numpy(), torch.cat(targets).numpy())[0]
+        preds_np, targets_np = torch.cat(preds).numpy(), torch.cat(targets).numpy()
+        plcc, srcc = safe_corr(preds_np, targets_np) # Avoiding NaNs
         val_plcc.append(plcc)
         val_srcc.append(srcc)
 
@@ -264,6 +310,7 @@ if __name__ == "__main__":
             early_stop_counter = 0
         else:
             early_stop_counter += 1
+            print(f"No improvement in val_loss for {early_stop_counter} epoch(s).")
 
         if scheduler:
             scheduler.step(avg_val_loss)
