@@ -7,7 +7,7 @@ def safe_gn(groups, ch):
     g = min(groups, ch)
     if ch % g != 0:
         g = math.gcd(ch, g) or 1
-    return nn.GroupNorm(g, ch)
+    return nn.GroupNorm(g, ch, eps=1e-6)
 
 def conv_3d(in_channels, out_channels, kernel_size, activation, dropout, norm_groups):
     return nn.Sequential(
@@ -30,6 +30,7 @@ class SEBlock3d(nn.Module):
         y = F.adaptive_avg_pool3d(x, 1).view(b, c)
         y = F.relu(self.fc1(y))
         y = torch.sigmoid(self.fc2(y)).view(b, c, 1, 1, 1)
+        y = torch.clamp(y, min=1e-6, max=1-1e-6) # Clamp to prevent 0 multiplication
         return x * y
 
 
@@ -88,12 +89,15 @@ class VMAFNet(nn.Module):
         )
 
         self.global_pool = nn.AdaptiveAvgPool3d((1, 1, 1))
+
+        # Added batch normalization before final layers for stability
         self.regressor = nn.Sequential(
             nn.Flatten(),
             nn.Linear(self.embed_channels, 128),
+            nn.BatchNorm1d(128, eps=1e-6),  # Batch norm for stability
             act_cls(),
+            nn.Dropout(p=dropout),
             nn.Linear(128, 1),
-            nn.Sigmoid(),
         )
 
     def forward(self, x_ref, x_dist):
@@ -112,5 +116,9 @@ class VMAFNet(nn.Module):
         x = self.cnn3(x)
         x = self.global_pool(x)
         x = self.regressor(x).squeeze(-1)
+
+        # Applying sigmoid and clamp to prevent extreme values that cause gradient issues
+        x = torch.sigmoid(x)
+        x = torch.clamp(x, min=1e-6, max=1-1e-6)
 
         return x

@@ -62,15 +62,15 @@ if __name__ == "__main__":
     parser.add_argument("--output_dir", type=str, default="output", help="Directory to save model checkpoints, metrics, and plots.")
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs.")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size for training and validation.")
-    parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate for the optimizer.")
+    parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate for the optimizer.")
     parser.add_argument("--norm_groups", type=int, default=16, help="Groups per conv block. Ideally a divisor of the layer's channel count.")
     parser.add_argument("--kernel_size", type=int, default=3, help="3D convolution kernel size for. Must be an odd number")
     parser.add_argument("--num_conv_layers", type=int, default=7, help="Number of convolution blocks")
-    parser.add_argument("--weight_decay", type=float, default=1e-4, help="Weight decay parameter for the optimizer")
+    parser.add_argument("--weight_decay", type=float, default=5e-5, help="Weight decay parameter for the optimizer")
     parser.add_argument("--reduction", type=int, default=16, help="Squeeze-and-Excitation reduction ratio.")
     parser.add_argument("--early_stop_patience", type=int, default=10, help="Number of maximum consecutive epochs without validation loss improvement to stop training.")
     parser.add_argument("--use_plateau_scheduler", action="store_true", help="Modify the learning rate when learning plateaus.")
-    parser.add_argument("--width", type=float, default=0.75, help="Width multiplier for channel counts in the model.")
+    parser.add_argument("--width", type=float, default=0.5, help="Width multiplier for channel counts in the model.")
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout probability in convolutional layers.")
     parser.add_argument("--activation", type=str, default="leaky_relu", choices=["relu", "leaky_relu"], help="Activation function in the model.")
     parser.add_argument("--crop_size", type=int, default=128, help="Size of square crop patches from frames.")
@@ -231,18 +231,21 @@ if __name__ == "__main__":
                 continue
             
             scaler.scale(loss).backward()
-            
-            # Check for finite gradients before unscaling
             scaler.unscale_(optimizer)
-            gnorm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             
+            # First clip individual values, then compute norm
+            torch.nn.utils.clip_grad_value_(model.parameters(), 1.0)
+            gnorm = torch.nn.utils.clip_grad_norm_(model.parameters(), 0.5)
+
+
             if torch.isfinite(gnorm):
                 # Only step if gradients are finite
                 scaler.step(optimizer)
                 running_loss += loss.item()
                 num_train_batches += 1
             else:
-                print("non-finite grad norm; skipping step.")
+                print(f"non-finite grad norm: {gnorm}; skipping step.")
+                print(f"Loss: {loss.item():.6f}, Pred range: [{prediction.min():.6f}, {prediction.max():.6f}]")            
             
             scaler.update()
 
