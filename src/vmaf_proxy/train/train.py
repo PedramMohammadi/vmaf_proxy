@@ -18,7 +18,6 @@ import torch.optim as optim
 import torch.multiprocessing as mp
 import os
 from torch.utils.data._utils.collate import default_collate
-from torch.cuda.amp import autocast, GradScaler
 
 # ------------------------------
 # Adding random seed to guarantee reproducibility
@@ -48,6 +47,11 @@ def worker_init_fn(worker_id):
 def safe_corr(preds_np, targets_np):
     if np.std(preds_np) == 0 or np.std(targets_np) == 0:
         return 0.0, 0.0
+    
+    # Clip extreme values to prevent overflow
+    preds_np = np.clip(preds_np, 0, 100)
+    targets_np = np.clip(targets_np, 0, 100)
+    
     plcc = pearsonr(preds_np, targets_np)[0]
     srcc = spearmanr(preds_np, targets_np)[0]
     if not np.isfinite(plcc): plcc = 0.0
@@ -61,23 +65,23 @@ if __name__ == "__main__":
     parser.add_argument("--root_dir", type=str, required=True, help="Root directory where frames are stored.")
     parser.add_argument("--output_dir", type=str, default="output", help="Directory to save model checkpoints, metrics, and plots.")
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs.")
-    parser.add_argument("--batch_size", type=int, default=8, help="Batch size for training and validation.")
+    parser.add_argument("--batch_size", type=int, default=16, help="Batch size for training and validation.")
     parser.add_argument("--lr", type=float, default=5e-5, help="Learning rate for the optimizer.")
     parser.add_argument("--norm_groups", type=int, default=16, help="Groups per conv block. Ideally a divisor of the layer's channel count.")
     parser.add_argument("--kernel_size", type=int, default=3, help="3D convolution kernel size for. Must be an odd number")
-    parser.add_argument("--num_conv_layers", type=int, default=7, help="Number of convolution blocks")
+    parser.add_argument("--num_conv_layers", type=int, default=4, help="Number of convolution blocks")
     parser.add_argument("--weight_decay", type=float, default=5e-5, help="Weight decay parameter for the optimizer")
     parser.add_argument("--reduction", type=int, default=16, help="Squeeze-and-Excitation reduction ratio.")
     parser.add_argument("--early_stop_patience", type=int, default=10, help="Number of maximum consecutive epochs without validation loss improvement to stop training.")
     parser.add_argument("--use_plateau_scheduler", action="store_true", help="Modify the learning rate when learning plateaus.")
-    parser.add_argument("--width", type=float, default=0.5, help="Width multiplier for channel counts in the model.")
+    parser.add_argument("--width", type=float, default=0.25, help="Width multiplier for channel counts in the model.")
     parser.add_argument("--dropout", type=float, default=0.1, help="Dropout probability in convolutional layers.")
     parser.add_argument("--activation", type=str, default="leaky_relu", choices=["relu", "leaky_relu"], help="Activation function in the model.")
     parser.add_argument("--crop_size", type=int, default=128, help="Size of square crop patches from frames.")
     parser.add_argument("--n_frames", type=int, default=3, help="Number of consecutive frames per sample.")
     parser.add_argument("--early_stop", action="store_true", help="Enable early stopping based on validation loss.")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu", help="Device for training.")
-    parser.add_argument("--num_workers", type=int, default=4, help="Number of workers for data loading.")
+    parser.add_argument("--num_workers", type=int, default=8, help="Number of workers for data loading.")
     parser.add_argument("--resume", type=str, default=None, help="Path to checkpoint file to resume training from.")
     args = parser.parse_args()
 
@@ -86,7 +90,7 @@ if __name__ == "__main__":
     if args.n_frames % 2 == 0:
         raise ValueError(f"--n_frames must be odd (got {args.n_frames})")
 
-    # Option B: everything is local (prefetched with gsutil rsync to /data/dataset)
+    # Everything is local (prefetched with gsutil rsync to /data/dataset)
     def _gs_to_local(p: str, local_root="/data"):
         if not isinstance(p, str) or not p.startswith("gs://"):
             return p
@@ -148,14 +152,13 @@ if __name__ == "__main__":
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
-    scaler = GradScaler()
-
     if args.use_plateau_scheduler:
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer, mode="min", factor=0.5, patience=2, min_lr=1e-6, verbose=True
         )
     else:
         scheduler = None
+
     start_epoch = 0
     best_val_loss = float('inf')
     early_stop_counter = 0
@@ -222,16 +225,14 @@ if __name__ == "__main__":
             if not (torch.isfinite(ref).all() and torch.isfinite(dist).all() and torch.isfinite(target).all()):
                 continue
 
-            with autocast():
-                prediction = model(ref, dist).view(-1)
-                target_flat = target.view(-1)
-                loss = criterion(prediction, target_flat)
+            prediction = model(ref, dist).view(-1)
+            target_flat = target.view(-1)
+            loss = criterion(prediction, target_flat)
             
             if not torch.isfinite(loss):
                 continue
             
-            scaler.scale(loss).backward()
-            scaler.unscale_(optimizer)
+            loss.backward()
             
             # First clip individual values, then compute norm
             torch.nn.utils.clip_grad_value_(model.parameters(), 1.0)
@@ -240,15 +241,13 @@ if __name__ == "__main__":
 
             if torch.isfinite(gnorm):
                 # Only step if gradients are finite
-                scaler.step(optimizer)
+                optimizer.step()
                 running_loss += loss.item()
                 num_train_batches += 1
             else:
                 print(f"non-finite grad norm: {gnorm}; skipping step.")
                 print(f"Loss: {loss.item():.6f}, Pred range: [{prediction.min():.6f}, {prediction.max():.6f}]")            
             
-            scaler.update()
-
         avg_train_loss = running_loss / max(1, num_train_batches)
         train_losses.append(avg_train_loss)
 
@@ -270,10 +269,9 @@ if __name__ == "__main__":
                 if not (torch.isfinite(ref).all() and torch.isfinite(dist).all() and torch.isfinite(target).all()):
                     continue
 
-                with autocast():
-                    prediction = model(ref, dist).view(-1)
-                    target_flat = target.view(-1)
-                    loss = criterion(prediction, target_flat)
+                prediction = model(ref, dist).view(-1)
+                target_flat = target.view(-1)
+                loss = criterion(prediction, target_flat)
 
                 val_loss += loss.item()
                 num_val_batches += 1
