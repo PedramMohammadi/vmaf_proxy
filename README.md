@@ -119,7 +119,7 @@ vmaf_proxy/
 │        └─ train.py             # CLI entry; training loop, metrics, checkpoints
 │     └─ inference/
 │        └─ infer_and_eval.py    # Inference script
-│        └─ Evaluation.md        # Evaluation and analysis results
+│        └─ README.md        # Evaluation and analysis results
 ├─ scripts/
 │  ├─ compress.py              # encode sources at CRFs (x264/x265/SVT-AV1)
 │  ├─ compute_vmaf.py          # produce frame-level VMAF JSON logs
