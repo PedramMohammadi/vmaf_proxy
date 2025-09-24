@@ -2,7 +2,7 @@
 
 This repository provides a deep learning model to estimate frame-level VMAF directly from a reference and a distorted video stream. This repo includes the full data pipeline from **dataset split → compression (x265) → VMAF calculation → frame extraction → CSV metadata → training** as well as cloud-friendly options and seeds for determinism.
 
-**Project status:** Training is in progress. I will publish checkpoints and full benchmarks once convergence is reached. In the meantime, the pipeline is fully reproducible—feel free to generate your own results.
+**Project status:** Training and inference are finalized and evaluation results are available in its designated folder in this repository.
 
 This work builds a **neural proxy** that:
 
@@ -114,9 +114,12 @@ vmaf_proxy/
 │     ├─ data/
 │     │  └─ vmaf_data_loader.py  # VMAFDataset
 │     ├─ models/
-│     │  └─ model.py          # 3D CNN + SE, fusion head
+│     │  └─ model.py             # 3D CNN + SE, fusion head
 │     └─ train/
 │        └─ train.py             # CLI entry; training loop, metrics, checkpoints
+│     └─ inference/
+│        └─ infer_and_eval.py    # Inference script
+│        └─ Evaluation.md        # Evaluation and analysis results
 ├─ scripts/
 │  ├─ compress.py              # encode sources at CRFs (x264/x265/SVT-AV1)
 │  ├─ compute_vmaf.py          # produce frame-level VMAF JSON logs
