@@ -112,6 +112,7 @@ vmaf_proxy/
 ├─ README.md
 ├─ LICENSE
 ├─ gitignore
+├─ architecture.svg
 ├─ src/
 │  └─ vmaf_proxy/
 │     ├─ data/
