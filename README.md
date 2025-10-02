@@ -4,8 +4,8 @@ This repository provides a deep learning model to estimate frame-level VMAF dire
 
 **Project status:** Training and inference are finalized and evaluation results are available in its designated folder in this repository.
 
-- **Model Architecture**
-![VMAF Proxy architecture](./vmafproxy.png "VMAF Proxy architecture")
+**Model Architecture**
+![VMAF Proxy architecture](./architecture.svg "VMAF Proxy architecture")
 
 This work builds a **neural proxy** that:
 
