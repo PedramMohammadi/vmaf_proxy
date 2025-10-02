@@ -149,8 +149,7 @@ if __name__ == "__main__":
             num_conv_layers=args.num_conv_layers
         ).to(args.device)
 
-    #criterion = nn.MSELoss()
-    criterion = nn.HuberLoss(delta=0.1)
+    criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     if args.use_plateau_scheduler:
